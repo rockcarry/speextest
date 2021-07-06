@@ -51,9 +51,7 @@ int ringbuf_read(uint8_t *rbuf, int maxsize, int head, uint8_t *dst, int len)
 static void play_pcm_file_buf(TESTCTXT *test)
 {
     int ret = fread(test->pcmbuf, 1, 160 * sizeof(int16_t), test->pcmfile);
-    if (ret == 160 * sizeof(int16_t)) {
-        wavdev_play(test->wavdev, test->pcmbuf, 160 * sizeof(int16_t));
-    }
+    if (ret == 160 * sizeof(int16_t)) wavdev_play(test->wavdev, test->pcmbuf, 160 * sizeof(int16_t));
 }
 
 static void wavin_callback_proc(void *ctxt, void *buf, int len)
@@ -61,16 +59,17 @@ static void wavin_callback_proc(void *ctxt, void *buf, int len)
     TESTCTXT *test = (TESTCTXT*)ctxt;
     int16_t  *out  = (int16_t *)buf ;
     int16_t   ref[160], tmp[160];
-    speex_preprocess_run(test->speexps, (spx_int16_t*)buf);
+
     pthread_mutex_lock(&test->mutex);
     if (test->size >= sizeof(ref)) {
-        test->head = ringbuf_read(test->ringbuf, sizeof(test->ringbuf), test->head, (uint8_t*)ref, sizeof(ref));
-        test->size-= sizeof(ref);
-        speex_echo_cancellation(test->speexes, (spx_int16_t*)buf, (spx_int16_t*)ref, (spx_int16_t*)tmp);
-        out = tmp;
+        test->head  = ringbuf_read(test->ringbuf, sizeof(test->ringbuf), test->head, (uint8_t*)ref, sizeof(ref));
+        test->size -= sizeof(ref);
+        speex_echo_cancellation(test->speexes, (spx_int16_t*)buf, (spx_int16_t*)ref, (spx_int16_t*)tmp); out = tmp;
     }
     pthread_mutex_unlock(&test->mutex);
-    if (test->rec_curpos + len <= test->rec_bufsize) {
+
+    speex_preprocess_run(test->speexps, (spx_int16_t*)out);
+    if (test->rec_curpos + len < test->rec_bufsize) {
         memcpy(test->rec_bufaddr + test->rec_curpos, out, len);
         test->rec_curpos += len;
     }
@@ -79,13 +78,13 @@ static void wavin_callback_proc(void *ctxt, void *buf, int len)
 static void wavout_callback_proc(void *ctxt, void *buf, int len)
 {
     TESTCTXT *test = (TESTCTXT*)ctxt;
-    play_pcm_file_buf(test);
     pthread_mutex_lock(&test->mutex);
     if (len <= sizeof(test->ringbuf) - test->size) {
-        test->tail = ringbuf_write(test->ringbuf, sizeof(test->ringbuf), test->tail, buf, len);
-        test->size+= len;
+        test->tail  = ringbuf_write(test->ringbuf, sizeof(test->ringbuf), test->tail, buf, len);
+        test->size += len;
     }
     pthread_mutex_unlock(&test->mutex);
+    play_pcm_file_buf(test);
 }
 
 int main(void)
@@ -97,7 +96,7 @@ int main(void)
     TESTCTXT              test= {0};
     int                   ival, i;
 
-    dev  = wavdev_init(8000, 1, 160, 10, wavin_callback_proc, &test, 8000, 1, 160, 10, wavout_callback_proc, &test);
+    dev  = wavdev_init(8000, 1, 160, 5, wavin_callback_proc, &test, 8000, 1, 160, 5, wavout_callback_proc, &test);
     file = wavfile_create(8000, 1, 60000);
     sps  = speex_preprocess_state_init(8000 / 50, 8000);
     ses  = speex_echo_state_init(8000 / 50, 800);
@@ -117,23 +116,19 @@ int main(void)
     ival =-30;    speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_AGC_DECREMENT , &ival);
     ival = 15;    speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_AGC_MAX_GAIN  , &ival);
 //  ival = 1;     speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_VAD           , &ival);
+    ses  = ses;   speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_ECHO_STATE    ,  ses );
 
+    wavdev_record(dev, 1);
     test.pcmfile = fopen("test.pcm", "rb");
-    for (i=0; i<10-1; i++) play_pcm_file_buf(&test);
+    for (i=0; i<5-1; i++) play_pcm_file_buf(&test);
 
     while (1) {
-        char cmd[256];
-        scanf("%256s", cmd);
-        if (strcmp(cmd, "rec_start") == 0) {
-            wavdev_record(dev, 1);
-        } else if (strcmp(cmd, "rec_stop") == 0) {
-            wavdev_record(dev, 0);
-        } else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
-            break;
-        }
+        char cmd[256]; scanf("%256s", cmd);
+        if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) break;
     }
 
     if (test.pcmfile) fclose(test.pcmfile);
+    wavdev_record(dev, 0);
     pthread_mutex_destroy(&test.mutex);
     speex_preprocess_state_destroy(sps);
     speex_echo_state_destroy(ses);
