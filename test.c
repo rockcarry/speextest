@@ -6,9 +6,11 @@
 #include <speex/speex_preprocess.h>
 #include <speex/speex_echo.h>
 #include "wavdev.h"
+#include "wavfile.h"
 
 typedef struct {
-    void                 *wavdev;
+    void                 *wavdev ;
+    void                 *wavfile;
     SpeexPreprocessState *speexps;
     SpeexEchoState       *speexes;
     uint8_t               ringbuf[160 * 3 * sizeof(int16_t)];
@@ -16,6 +18,12 @@ typedef struct {
     int                   tail;
     int                   size;
     pthread_mutex_t       mutex;
+    uint8_t              *rec_bufaddr;
+    int                   rec_bufsize;
+    int                   rec_curpos;
+
+    FILE                 *pcmfile;
+    int16_t               pcmbuf[160];
 } TESTCTXT;
 
 int ringbuf_write(uint8_t *rbuf, int maxsize, int tail, uint8_t *src, int len)
@@ -40,6 +48,14 @@ int ringbuf_read(uint8_t *rbuf, int maxsize, int head, uint8_t *dst, int len)
     return len2 ? len2 : head + len1;
 }
 
+static void play_pcm_file_buf(TESTCTXT *test)
+{
+    int ret = fread(test->pcmbuf, 1, 160 * sizeof(int16_t), test->pcmfile);
+    if (ret == 160 * sizeof(int16_t)) {
+        wavdev_play(test->wavdev, test->pcmbuf, 160 * sizeof(int16_t));
+    }
+}
+
 static void wavin_callback_proc(void *ctxt, void *buf, int len)
 {
     TESTCTXT *test = (TESTCTXT*)ctxt;
@@ -54,12 +70,17 @@ static void wavin_callback_proc(void *ctxt, void *buf, int len)
         out = tmp;
     }
     pthread_mutex_unlock(&test->mutex);
-//  wavdev_play(test->wavdev, out, len);
+    printf("%d %d %d\n", test->rec_curpos, len, test->rec_bufsize); fflush(stdout);
+    if (test->rec_curpos + len <= test->rec_bufsize) {
+        memcpy(test->rec_bufaddr + test->rec_curpos, out, len);
+        test->rec_curpos += len;
+    }
 }
 
 static void wavout_callback_proc(void *ctxt, void *buf, int len)
 {
     TESTCTXT *test = (TESTCTXT*)ctxt;
+    play_pcm_file_buf(test);
     pthread_mutex_lock(&test->mutex);
     if (len <= sizeof(test->ringbuf) - test->size) {
         test->tail = ringbuf_write(test->ringbuf, sizeof(test->ringbuf), test->tail, buf, len);
@@ -71,17 +92,22 @@ static void wavout_callback_proc(void *ctxt, void *buf, int len)
 int main(void)
 {
     void                 *dev = NULL;
+    void                 *file= NULL;
     SpeexPreprocessState *sps = NULL;
     SpeexEchoState       *ses = NULL;
     TESTCTXT              test= {0};
-    int                   ival;
+    int                   ival, i;
 
     dev  = wavdev_init(8000, 1, 160, 10, wavin_callback_proc, &test, 8000, 1, 160, 10, wavout_callback_proc, &test);
+    file = wavfile_create(8000, 1, 60000);
     sps  = speex_preprocess_state_init(8000 / 50, 8000);
     ses  = speex_echo_state_init(8000 / 50, 800);
-    test.wavdev = dev;
-    test.speexps= sps;
-    test.speexes= ses;
+    test.wavdev   = dev;
+    test.wavfile  = file;
+    test.speexps  = sps;
+    test.speexes  = ses;
+    wavfile_getval(test.wavfile, "buffer_pointer", &test.rec_bufaddr);
+    wavfile_getval(test.wavfile, "buffer_size"   , &test.rec_bufsize);
     pthread_mutex_init(&test.mutex, NULL);
 
     ival = 1;     speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_DENOISE       , &ival);
@@ -92,6 +118,9 @@ int main(void)
     ival =-30;    speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_AGC_DECREMENT , &ival);
     ival = 15;    speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_AGC_MAX_GAIN  , &ival);
 //  ival = 1;     speex_preprocess_ctl(sps, SPEEX_PREPROCESS_SET_VAD           , &ival);
+
+    test.pcmfile = fopen("test.pcm", "rb");
+    for (i=0; i<10-1; i++) play_pcm_file_buf(&test);
 
     while (1) {
         char cmd[256];
@@ -105,10 +134,13 @@ int main(void)
         }
     }
 
+    if (test.wavfile) fclose(test.wavfile);
     pthread_mutex_destroy(&test.mutex);
     speex_preprocess_state_destroy(sps);
     speex_echo_state_destroy(ses);
-    wavdev_exit(dev);
+    wavfile_save(file, "rec.wav", test.rec_curpos);
+    wavfile_free(file);
+    wavdev_exit (dev );
     return 0;
 }
 
