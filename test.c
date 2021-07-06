@@ -70,7 +70,6 @@ static void wavin_callback_proc(void *ctxt, void *buf, int len)
         out = tmp;
     }
     pthread_mutex_unlock(&test->mutex);
-    printf("%d %d %d\n", test->rec_curpos, len, test->rec_bufsize); fflush(stdout);
     if (test->rec_curpos + len <= test->rec_bufsize) {
         memcpy(test->rec_bufaddr + test->rec_curpos, out, len);
         test->rec_curpos += len;
@@ -134,7 +133,7 @@ int main(void)
         }
     }
 
-    if (test.wavfile) fclose(test.wavfile);
+    if (test.pcmfile) fclose(test.pcmfile);
     pthread_mutex_destroy(&test.mutex);
     speex_preprocess_state_destroy(sps);
     speex_echo_state_destroy(ses);
